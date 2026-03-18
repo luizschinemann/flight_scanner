@@ -1,0 +1,50 @@
+# ──────────────────────────────────────────────
+#  FlightScanner — Configuração
+#  Copie este arquivo para config.yaml e preencha com seus dados.
+# ──────────────────────────────────────────────
+
+app:
+  currency: "BRL"
+  language: "pt-BR"
+
+# ── Agendamento ────────────────────────────────
+schedule:
+  interval_minutes: 60
+  start_immediately: true
+  run_at_times: []
+
+# ── Buscas configuradas ────────────────────────
+searches:
+  - id: "gru-lis-maio"
+    description: "São Paulo ↔ Lisboa — 15→30/Mai/2026"
+    origin: "GRU"
+    destination: "LIS"
+    outbound_date: "2026-05-15"
+    return_date: "2026-05-30"
+    adults: 1
+    cabin: "economy"
+
+# ── Notificações ────────────────────────────────
+notifications:
+  console: true
+  price_drop_threshold_pct: 5.0
+  webhook_url: ""
+  telegram:
+    enabled: false
+    bot_token: "SEU_BOT_TOKEN"    # obtido via @BotFather
+    chat_id: "SEU_CHAT_ID"        # obtido via @userinfobot
+
+# ── Armazenamento ───────────────────────────────
+storage:
+  db_path: "./data/flights.db"
+  keep_history_days: 90
+
+# ── Scraper ─────────────────────────────────────
+scraper:
+  headless: true
+  timeout_ms: 35000
+  screenshot_on_error: true
+  retry_attempts: 2
+  delay_between_searches_sec: 8
+  proxy: ""
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"

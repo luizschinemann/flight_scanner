@@ -1,0 +1,34 @@
+# Configuração local (contém credenciais — nunca commitar)
+config.yaml
+
+# Claude Code (configurações locais do editor)
+.claude/
+
+# Dados gerados em runtime
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Ambientes virtuais
+venv/
+.venv/
+env/
+.env/
+
+# Playwright
+.playwright/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema
+.DS_Store
+Thumbs.db
