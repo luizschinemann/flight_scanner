@@ -31,6 +31,8 @@ class FlightScheduler:
         )
         self._run_count = 0
         self._scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
+        self._bot = None
+        self._bot_task = None
 
     # ── Execução de uma rodada ─────────────────────────────────────────────────
 
@@ -106,6 +108,14 @@ class FlightScheduler:
 
         self._scheduler.start()
 
+        # ── Telegram Bot (polling em background) ─────────────────────────────
+        tg = self.config.notifications.telegram
+        if tg.enabled and tg.bot_token and tg.chat_id:
+            from .telegram_bot import TelegramBot
+            self._bot = TelegramBot(tg.bot_token, tg.chat_id, self.storage, self)
+            self._bot_task = asyncio.create_task(self._bot.start())
+            logger.info("Telegram Bot ativo — comandos: /status /buscar /historico")
+
         if sched.start_immediately:
             logger.info("Executando primeira rodada imediatamente…")
             await self.run_once()
@@ -132,6 +142,10 @@ class FlightScheduler:
 
     async def _shutdown(self):
         logger.info("Encerrando…")
+        if self._bot:
+            self._bot.stop()
+        if self._bot_task:
+            self._bot_task.cancel()
         self._scheduler.shutdown(wait=False)
         await self.scraper.stop()
         logger.info("Encerrado.")
