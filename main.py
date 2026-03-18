@@ -2,7 +2,7 @@
 FlightScanner — ponto de entrada CLI.
 
 Comandos disponíveis:
-  setup     Assistente interativo para criar/editar o config.yaml
+  setup     Gerencia as buscas de voo (adicionar / remover)
   run       Inicia o agendador contínuo (loop principal)
   search    Executa uma rodada avulsa (uma vez) e sai
   history   Exibe histórico de preços do banco
@@ -192,66 +192,85 @@ def history(
 
 @app.command()
 def setup(
-    output: str = typer.Option("config.yaml", "--output", "-o", help="Arquivo de saída"),
+    config: str = typer.Option(_DEFAULT_CONFIG, "--config", "-c", help="Caminho para config.yaml"),
 ):
-    """Assistente interativo para criar ou editar o config.yaml."""
+    """Gerencia as buscas de voo: adicionar ou remover sem tocar no resto do config."""
     import yaml
     from rich.prompt import Confirm, IntPrompt, Prompt
     from rich.panel import Panel
 
-    console.print(
-        Panel(
-            "[bold cyan]FlightScanner[/bold cyan] — Assistente de Configuração\n"
-            "[dim]Responda as perguntas para gerar seu config.yaml[/dim]",
-            expand=False,
-        )
-    )
-
-    # ── Config existente ──────────────────────────────────────────────────────
-    config_path = Path(output)
-    if config_path.exists():
-        console.print(f"\n[yellow]⚠  Arquivo[/yellow] [bold]{output}[/bold] [yellow]já existe.[/yellow]")
-        if not Confirm.ask("  Deseja sobrescrevê-lo?", default=False):
-            raise typer.Exit()
-
-    # ── Buscas ────────────────────────────────────────────────────────────────
-    console.rule("\n[bold blue]Buscas de Voo[/bold blue]")
     _MES_ABBR = ["", "jan", "fev", "mar", "abr", "mai", "jun",
                  "jul", "ago", "set", "out", "nov", "dez"]
-    searches = []
-    idx = 1
-    while True:
-        console.print(f"\n  [bold]Busca #{idx}[/bold]")
-        origin      = Prompt.ask("    Origem  (código IATA, ex: VDC)").upper().strip()
-        destination = Prompt.ask("    Destino (código IATA, ex: GRU)").upper().strip()
-        outbound    = Prompt.ask("    Data de ida      (YYYY-MM-DD)")
-        round_trip  = Confirm.ask("    Ida e volta?", default=True)
+
+    config_path = Path(config)
+    if not config_path.exists():
+        console.print(
+            f"[bold red]Erro:[/bold red] {config} não encontrado.\n"
+            "  Copie [bold]config.yaml.example[/bold] para [bold]config.yaml[/bold] primeiro."
+        )
+        raise typer.Exit(1)
+
+    # ── Carrega raw YAML para preservar todas as outras seções ──────────────
+    with open(config_path, encoding="utf-8") as f:
+        raw: dict = yaml.safe_load(f) or {}
+
+    def _show_table(searches: list[dict]) -> None:
+        if not searches:
+            console.print("  [dim]Nenhuma busca configurada.[/dim]\n")
+            return
+        t = Table(box=box.SIMPLE_HEAVY, show_header=True, header_style="bold blue")
+        t.add_column("#",      style="dim", width=3, justify="right")
+        t.add_column("ID",     min_width=20)
+        t.add_column("Rota",   min_width=10)
+        t.add_column("Ida",    justify="center", min_width=12)
+        t.add_column("Volta",  justify="center", min_width=12)
+        t.add_column("Classe", justify="center", min_width=9)
+        for i, s in enumerate(searches, 1):
+            t.add_row(
+                str(i),
+                s.get("id", ""),
+                f"{s.get('origin', '')} ↔ {s.get('destination', '')}",
+                s.get("outbound_date", ""),
+                s.get("return_date", "[dim]–[/dim]"),
+                s.get("cabin", "economy"),
+            )
+        console.print(t)
+
+    def _add_search(searches: list[dict]) -> None:
+        console.print()
+        origin      = Prompt.ask("  Origem  (IATA, ex: VDC)").upper().strip()
+        destination = Prompt.ask("  Destino (IATA, ex: GRU)").upper().strip()
+        outbound    = Prompt.ask("  Data de ida   (YYYY-MM-DD)")
+        round_trip  = Confirm.ask("  Ida e volta?", default=True)
         return_date = None
         if round_trip:
-            return_date = Prompt.ask("    Data de volta    (YYYY-MM-DD)")
-        adults = IntPrompt.ask("    Adultos", default=1)
+            return_date = Prompt.ask("  Data de volta (YYYY-MM-DD)")
+        adults = IntPrompt.ask("  Adultos", default=1)
         cabin  = Prompt.ask(
-            "    Classe",
-            choices=["economy", "business", "first"],
-            default="economy",
+            "  Classe", choices=["economy", "business", "first"], default="economy"
         )
 
-        # ID e descrição automáticos
         try:
-            m  = int(outbound[5:7])
-            yy = outbound[2:4]
-            auto_id = f"{origin.lower()}-{destination.lower()}-{_MES_ABBR[m]}{yy}"
+            m         = int(outbound[5:7])
+            yy        = outbound[2:4]
+            auto_id   = f"{origin.lower()}-{destination.lower()}-{_MES_ABBR[m]}{yy}"
             volta_str = f"→{return_date[8:10]}" if return_date else ""
             auto_desc = (
                 f"{origin} ↔ {destination} — "
                 f"{outbound[8:10]}{volta_str}/{outbound[5:7]}/{outbound[:4]}"
             )
         except Exception:
-            auto_id   = f"busca-{idx}"
+            auto_id   = f"busca-{len(searches) + 1}"
             auto_desc = f"{origin} → {destination} {outbound}"
 
-        description = Prompt.ask("    Descrição", default=auto_desc)
-        search_id   = Prompt.ask("    ID único",  default=auto_id)
+        description = Prompt.ask("  Descrição", default=auto_desc)
+        search_id   = Prompt.ask("  ID único",  default=auto_id)
+
+        # Garante ID único
+        existing_ids = {s["id"] for s in searches}
+        while search_id in existing_ids:
+            console.print(f"  [yellow]ID '{search_id}' já existe.[/yellow]")
+            search_id = Prompt.ask("  ID único (diferente)")
 
         s: dict = {
             "id":            search_id,
@@ -265,109 +284,69 @@ def setup(
         if return_date:
             s["return_date"] = return_date
         searches.append(s)
-        console.print(f"  [green]✓[/green] [bold]{description}[/bold] adicionada.")
-        idx += 1
+        console.print(f"\n  [green]✓[/green] [bold]{description}[/bold] adicionada.")
 
-        if not Confirm.ask("\n  Adicionar outra busca?", default=False):
-            break
+    def _remove_search(searches: list[dict]) -> None:
+        if not searches:
+            console.print("  [yellow]Nenhuma busca para remover.[/yellow]")
+            return
+        num = IntPrompt.ask(f"  Remover qual? (1–{len(searches)})")
+        if 1 <= num <= len(searches):
+            removed = searches.pop(num - 1)
+            console.print(
+                f"\n  [red]✕[/red] Busca [bold]{removed['id']}[/bold] removida."
+            )
+        else:
+            console.print("  [yellow]Número inválido.[/yellow]")
 
-    # ── Agendamento ───────────────────────────────────────────────────────────
-    console.rule("\n[bold blue]Agendamento[/bold blue]")
-    use_times = Confirm.ask(
-        "\n  Usar horários fixos do dia? (ex: 08:00 e 20:00)", default=False
-    )
-    interval_minutes = 60
-    run_at_times: list[str] = []
-    if use_times:
-        raw = Prompt.ask("  Horários separados por vírgula", default="08:00,20:00")
-        run_at_times = [t.strip() for t in raw.split(",") if t.strip()]
-    else:
-        interval_minutes = IntPrompt.ask("  Intervalo entre rodadas (minutos)", default=60)
-    start_immediately = Confirm.ask("  Executar imediatamente ao iniciar?", default=True)
+    # ── Loop principal ────────────────────────────────────────────────────────
+    searches: list[dict] = list(raw.get("searches", []))
+    changed = False
 
-    # ── Telegram ──────────────────────────────────────────────────────────────
-    console.rule("\n[bold blue]Notificações — Telegram[/bold blue]")
-    tg_enabled = Confirm.ask("\n  Habilitar notificações pelo Telegram?", default=True)
-    bot_token = ""
-    chat_id   = ""
-    if tg_enabled:
+    while True:
+        console.print()
+        console.rule("[bold cyan]FlightScanner[/bold cyan] — Buscas de Voo")
+        console.print()
+        _show_table(searches)
+
         console.print(
-            "  [dim]Token → @BotFather no Telegram  |  Chat ID → @userinfobot[/dim]"
+            "  [bold][A][/bold] Adicionar busca\n"
+            "  [bold][R][/bold] Remover busca\n"
+            "  [bold][S][/bold] Salvar e sair\n"
+            "  [bold][Q][/bold] Sair sem salvar"
         )
-        bot_token = Prompt.ask("  Bot Token")
-        chat_id   = Prompt.ask("  Chat ID")
+        console.print()
+        action = Prompt.ask("  Opção", choices=["a", "r", "s", "q"], default="s").lower()
 
-    threshold_str = Prompt.ask(
-        "  % mínima de queda para alerta especial [dim](0 = alerta sempre)[/dim]",
-        default="0.0",
-    )
+        if action == "a":
+            _add_search(searches)
+            changed = True
+        elif action == "r":
+            _remove_search(searches)
+            changed = True
+        elif action == "s":
+            break
+        elif action == "q":
+            console.print("  [dim]Saindo sem salvar.[/dim]")
+            raise typer.Exit()
 
-    # ── Scraper ───────────────────────────────────────────────────────────────
-    console.rule("\n[bold blue]Scraper[/bold blue]")
-    headless = Confirm.ask(
-        "\n  Executar o Chrome em modo headless (sem janela)?", default=True
-    )
+    # ── Salva apenas a seção searches, preservando todo o resto ──────────────
+    if changed:
+        raw["searches"] = searches
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(raw, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
 
-    # ── Gera e escreve YAML ───────────────────────────────────────────────────
-    config_data = {
-        "app": {"currency": "BRL", "language": "pt-BR"},
-        "schedule": {
-            "interval_minutes": interval_minutes,
-            "start_immediately": start_immediately,
-            "run_at_times":      run_at_times,
-        },
-        "searches": searches,
-        "notifications": {
-            "console":                  True,
-            "price_drop_threshold_pct": float(threshold_str),
-            "webhook_url":              "",
-            "telegram": {
-                "enabled":   tg_enabled,
-                "bot_token": bot_token,
-                "chat_id":   chat_id,
-            },
-        },
-        "storage": {
-            "db_path":          "./data/flights.db",
-            "keep_history_days": 90,
-        },
-        "scraper": {
-            "headless":                   headless,
-            "timeout_ms":                 35000,
-            "screenshot_on_error":        True,
-            "retry_attempts":             2,
-            "delay_between_searches_sec": 8,
-            "proxy":                      "",
-            "user_agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-        },
-    }
-
-    Path(output).parent.mkdir(parents=True, exist_ok=True)
-    with open(output, "w", encoding="utf-8") as f:
-        yaml.dump(
-            config_data, f,
-            allow_unicode=True,
-            sort_keys=False,
-            default_flow_style=False,
+        console.print()
+        console.print(
+            Panel(
+                f"[bold green]✓  config.yaml salvo com {len(searches)} busca(s).[/bold green]\n\n"
+                f"  [cyan]python main.py search[/cyan]  → testar agora\n"
+                f"  [cyan]python main.py run[/cyan]     → iniciar o monitor",
+                expand=False,
+            )
         )
-
-    console.print()
-    console.print(
-        Panel(
-            f"[bold green]✓  {output} criado com sucesso![/bold green]\n\n"
-            f"  {len(searches)} busca(s) configurada(s)\n\n"
-            f"  [bold]Próximos passos:[/bold]\n"
-            f"  [cyan]python main.py install[/cyan]   → instalar o Chromium\n"
-            f"  [cyan]python main.py search[/cyan]    → testar uma busca agora\n"
-            f"  [cyan]python main.py run[/cyan]        → iniciar o monitor contínuo",
-            title="[bold green]Configuração concluída[/bold green]",
-            expand=False,
-        )
-    )
+    else:
+        console.print("\n  [dim]Nenhuma alteração realizada.[/dim]")
 
 
 @app.command()
