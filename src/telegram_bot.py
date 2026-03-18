@@ -6,15 +6,18 @@ Comandos:
   /status     Último preço mais barato de cada rota
   /buscar     Força uma rodada de buscas agora
   /historico  Mínimo histórico por rota
+  /voo        Busca avulsa: /voo GRU LIS 2026-05-15 2026-05-30
 """
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import TYPE_CHECKING, Optional
 
 import httpx
 from loguru import logger
 
+from .config import SearchConfig
 from .storage import Storage
 
 if TYPE_CHECKING:
@@ -96,6 +99,8 @@ class TelegramBot:
                 await self._cmd_buscar()
             elif text.startswith("/historico"):
                 await self._cmd_historico()
+            elif text.startswith("/voo"):
+                await self._cmd_voo(text)
 
     # ── Comandos ───────────────────────────────────────────────────────────────
 
@@ -109,6 +114,11 @@ class TelegramBot:
             "/status  — ultimo preco por rota",
             "/buscar  — forcar busca agora",
             "/historico  — minimo historico",
+            "/voo  — busca avulsa",
+            "",
+            "Exemplo:",
+            "/voo GRU LIS 2026-05-15 2026-05-30",
+            "/voo VDC GRU 2026-06-10",
         ]
         await self._send("\n".join(lines))
 
@@ -197,6 +207,100 @@ class TelegramBot:
 
         await self._send("\n".join(lines))
 
+    async def _cmd_voo(self, text: str):
+        """
+        /voo ORIGEM DESTINO DATA_IDA [DATA_VOLTA]
+        Ex: /voo GRU LIS 2026-05-15 2026-05-30
+            /voo VDC GRU 2026-06-10
+        """
+        parts = text.split()
+        # parts[0] = "/voo", [1]=origin, [2]=dest, [3]=outbound, [4]=return (opcional)
+        if len(parts) < 4:
+            await self._send(
+                "Uso: /voo ORIGEM DESTINO DATA_IDA [DATA_VOLTA]\n\n"
+                "Exemplos:\n"
+                "/voo GRU LIS 2026-05-15 2026-05-30\n"
+                "/voo VDC GRU 2026-06-10"
+            )
+            return
+
+        origin   = parts[1].upper()
+        dest     = parts[2].upper()
+        outbound = parts[3]
+        ret_date = parts[4] if len(parts) >= 5 else None
+
+        # Valida formato das datas
+        date_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+        if not date_re.match(outbound):
+            await self._send(f"Data de ida invalida: {outbound}\nUse o formato YYYY-MM-DD")
+            return
+        if ret_date and not date_re.match(ret_date):
+            await self._send(f"Data de volta invalida: {ret_date}\nUse o formato YYYY-MM-DD")
+            return
+
+        # Valida IATA (3 letras)
+        if not re.match(r"^[A-Z]{3}$", origin) or not re.match(r"^[A-Z]{3}$", dest):
+            await self._send("Codigos IATA devem ter 3 letras (ex: GRU, LIS, VDC)")
+            return
+
+        if self._searching:
+            await self._send("Ja existe uma busca em andamento...")
+            return
+
+        trip_type = "ida e volta" if ret_date else "so ida"
+        await self._send(
+            f"Buscando {origin} → {dest}\n"
+            f"Ida: {outbound}"
+            + (f"  ·  Volta: {ret_date}" if ret_date else "")
+            + f"\nTipo: {trip_type}\n\nAguarde..."
+        )
+
+        # Cria um SearchConfig temporário
+        search = SearchConfig(
+            id=f"adhoc-{origin.lower()}-{dest.lower()}",
+            origin=origin,
+            destination=dest,
+            outbound_date=outbound,
+            return_date=ret_date,
+            description=f"{origin} → {dest}",
+            adults=1,
+            cabin="economy",
+        )
+
+        self._searching = True
+        try:
+            results = await self.scheduler.scraper.search(search)
+            if not results:
+                await self._send(f"Nenhum resultado para {origin} → {dest}")
+                return
+
+            # Formata os top 5 resultados
+            lines = [
+                f"✈️ {origin} → {dest}",
+                f"📅 Ida {outbound}" + (f"  ·  Volta {ret_date}" if ret_date else ""),
+                "",
+            ]
+            for i, r in enumerate(results[:5]):
+                parts_line = [_fmt_price(r.price, r.currency)]
+                if r.airline:
+                    parts_line.append(r.airline)
+                if r.departure_time and r.arrival_time:
+                    parts_line.append(f"{r.departure_time} → {r.arrival_time}")
+                if r.stops == 0:
+                    parts_line.append("Direto")
+                elif r.stops > 0:
+                    parts_line.append(f"{r.stops} escala{'s' if r.stops > 1 else ''}")
+
+                prefix = "🥇 " if i == 0 else "   "
+                lines.append(f"{prefix}{'  ·  '.join(parts_line)}")
+
+            await self._send("\n".join(lines))
+        except Exception as exc:
+            logger.error(f"Erro na busca avulsa via Telegram: {exc}")
+            await self._send(f"Erro na busca: {exc}")
+        finally:
+            self._searching = False
+
     # ── Helpers ────────────────────────────────────────────────────────────────
 
     async def _send(self, text: str):
@@ -214,6 +318,7 @@ class TelegramBot:
             {"command": "status",    "description": "Ultimo preco por rota"},
             {"command": "buscar",    "description": "Forcar busca agora"},
             {"command": "historico", "description": "Minimo historico por rota"},
+            {"command": "voo",       "description": "Busca avulsa: /voo GRU LIS 2026-05-15"},
         ]
         try:
             async with httpx.AsyncClient(timeout=10) as client:
