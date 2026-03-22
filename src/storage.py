@@ -28,6 +28,9 @@ class FlightResult:
     duration: str
     stops: int
     scraped_at: str = ""
+    # Horários de volta (para round-trip)
+    return_departure_time: str = ""
+    return_arrival_time: str = ""
 
     def __post_init__(self):
         if not self.scraped_at:
@@ -51,26 +54,30 @@ class PriceRecord:
     duration: str
     stops: int
     scraped_at: str
+    return_departure_time: str = ""
+    return_arrival_time: str = ""
 
 
 # ── Banco de dados ─────────────────────────────────────────────────────────────
 
 DDL = """
 CREATE TABLE IF NOT EXISTS flight_prices (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    search_id       TEXT    NOT NULL,
-    origin          TEXT    NOT NULL,
-    destination     TEXT    NOT NULL,
-    outbound_date   TEXT    NOT NULL,
-    return_date     TEXT,
-    price           REAL    NOT NULL,
-    currency        TEXT    NOT NULL DEFAULT 'BRL',
-    airline         TEXT    NOT NULL DEFAULT '',
-    departure_time  TEXT    NOT NULL DEFAULT '',
-    arrival_time    TEXT    NOT NULL DEFAULT '',
-    duration        TEXT    NOT NULL DEFAULT '',
-    stops           INTEGER NOT NULL DEFAULT -1,
-    scraped_at      TEXT    NOT NULL
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    search_id             TEXT    NOT NULL,
+    origin                TEXT    NOT NULL,
+    destination           TEXT    NOT NULL,
+    outbound_date         TEXT    NOT NULL,
+    return_date           TEXT,
+    price                 REAL    NOT NULL,
+    currency              TEXT    NOT NULL DEFAULT 'BRL',
+    airline               TEXT    NOT NULL DEFAULT '',
+    departure_time        TEXT    NOT NULL DEFAULT '',
+    arrival_time          TEXT    NOT NULL DEFAULT '',
+    duration              TEXT    NOT NULL DEFAULT '',
+    stops                 INTEGER NOT NULL DEFAULT -1,
+    scraped_at            TEXT    NOT NULL,
+    return_departure_time TEXT    NOT NULL DEFAULT '',
+    return_arrival_time   TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_search_date
@@ -100,6 +107,21 @@ class Storage:
     def _init_db(self):
         with self._conn() as conn:
             conn.executescript(DDL)
+            # Migração: adiciona colunas de horário de volta se não existirem
+            try:
+                conn.execute("""
+                    ALTER TABLE flight_prices
+                    ADD COLUMN return_departure_time TEXT NOT NULL DEFAULT ''
+                """)
+            except sqlite3.OperationalError:
+                pass  # Coluna já existe
+            try:
+                conn.execute("""
+                    ALTER TABLE flight_prices
+                    ADD COLUMN return_arrival_time TEXT NOT NULL DEFAULT ''
+                """)
+            except sqlite3.OperationalError:
+                pass  # Coluna já existe
 
     # ── Escrita ──────────────────────────────────────────────────────────────
 
@@ -112,7 +134,7 @@ class Storage:
                 r.search_id, r.origin, r.destination, r.outbound_date,
                 r.return_date, r.price, r.currency, r.airline,
                 r.departure_time, r.arrival_time, r.duration, r.stops,
-                r.scraped_at,
+                r.scraped_at, r.return_departure_time, r.return_arrival_time,
             )
             for r in results
         ]
@@ -121,8 +143,8 @@ class Storage:
                 """INSERT INTO flight_prices
                    (search_id, origin, destination, outbound_date, return_date,
                     price, currency, airline, departure_time, arrival_time,
-                    duration, stops, scraped_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    duration, stops, scraped_at, return_departure_time, return_arrival_time)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 rows,
             )
         return len(rows)

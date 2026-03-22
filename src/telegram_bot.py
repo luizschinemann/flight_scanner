@@ -152,6 +152,13 @@ class TelegramBot:
                 f"  Ultimo: {_fmt_price(last.price, last.currency)}"
                 f"  ({last.scraped_at[:16].replace('T', ' ')})"
             )
+            # Horários de ida
+            if last.departure_time and last.arrival_time:
+                lines.append(f"  Ida: {last.departure_time} → {last.arrival_time}")
+            # Horários de volta
+            if last.return_departure_time and last.return_arrival_time:
+                lines.append(f"  Volta: {last.return_departure_time} → {last.return_arrival_time}")
+            # Mínimo histórico
             if min_price is not None:
                 lines.append(f"  Minimo: {_fmt_price(min_price, last.currency)}")
             lines.append("")
@@ -281,18 +288,34 @@ class TelegramBot:
                 "",
             ]
             for i, r in enumerate(results[:5]):
-                parts_line = [_fmt_price(r.price, r.currency)]
-                if r.airline:
-                    parts_line.append(r.airline)
-                if r.departure_time and r.arrival_time:
-                    parts_line.append(f"{r.departure_time} → {r.arrival_time}")
-                if r.stops == 0:
-                    parts_line.append("Direto")
-                elif r.stops > 0:
-                    parts_line.append(f"{r.stops} escala{'s' if r.stops > 1 else ''}")
-
                 prefix = "🥇 " if i == 0 else "   "
-                lines.append(f"{prefix}{'  ·  '.join(parts_line)}")
+
+                # Linha 1: Preço e companhia
+                line1_parts = [_fmt_price(r.price, r.currency)]
+                if r.airline:
+                    line1_parts.append(r.airline)
+
+                # Linha 2: Horários de IDA
+                line2_parts = []
+                if r.departure_time and r.arrival_time:
+                    line2_parts.append(f"Ida: {r.departure_time} → {r.arrival_time}")
+                if r.stops == 0:
+                    line2_parts.append("Direto")
+                elif r.stops > 0:
+                    line2_parts.append(f"{r.stops} escala{'s' if r.stops > 1 else ''}")
+
+                # Linha 3: Horários de VOLTA (se houver)
+                line3_parts = []
+                if ret_date and r.return_departure_time and r.return_arrival_time:
+                    line3_parts.append(f"Volta: {r.return_departure_time} → {r.return_arrival_time}")
+
+                # Monta as linhas
+                lines.append(f"{prefix}{'  ·  '.join(line1_parts)}")
+                if line2_parts:
+                    lines.append(f"   {'  ·  '.join(line2_parts)}")
+                if line3_parts:
+                    lines.append(f"   {'  ·  '.join(line3_parts)}")
+                lines.append("")  # Linha vazia entre voos
 
             await self._send("\n".join(lines))
         except Exception as exc:

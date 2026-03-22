@@ -134,10 +134,14 @@ _EXTRACT_JS = r"""
         );
         if (isNaN(price) || price <= 0) continue;
 
-        // ── Horários (primeiro e segundo HH:MM no card) ────────────────
+        // ── Horários: captura TODOS os horários no card ────────────────
+        // Para round-trip: [0]=saída ida, [1]=chegada ida, [2]=saída volta, [3]=chegada volta
+        // Para one-way: [0]=saída, [1]=chegada
         const times = (text.match(/\b\d{1,2}:\d{2}\b/g) || []);
-        const departure = times[0] || '';
-        const arrival   = times[1] || '';
+        const outbound_dep = times[0] || '';
+        const outbound_arr = times[1] || '';
+        const return_dep   = times[2] || '';
+        const return_arr   = times[3] || '';
 
         // ── Companhia: detecta pelo texto do card ─────────────────────
         let airline = '';
@@ -153,11 +157,13 @@ _EXTRACT_JS = r"""
         }
 
         results.push({
-            priceText : text,
-            price     : price,
-            departure : departure,
-            arrival   : arrival,
-            airline   : airline,
+            priceText    : text,
+            price        : price,
+            outbound_dep : outbound_dep,
+            outbound_arr : outbound_arr,
+            return_dep   : return_dep,
+            return_arr   : return_arr,
+            airline      : airline,
         });
     }
     return results;
@@ -218,7 +224,16 @@ class FlightScraper:
             try:
                 results = await self._do_search(search, attempt)
                 if results:
-                    return sorted(results, key=lambda r: r.price)
+                    # Ordena por score (horário prioritário, depois preço)
+                    sorted_results = sorted(results, key=lambda r: _flight_score(r, search))
+                    if sorted_results:
+                        best = sorted_results[0]
+                        logger.info(
+                            f"[{search.id}] Melhor opção (horário prioritário): "
+                            f"ida {best.departure_time} volta {best.return_departure_time or 'N/A'} "
+                            f"— R$ {best.price:,.2f}"
+                        )
+                    return sorted_results
                 logger.warning(f"[{search.id}] Tentativa {attempt}: sem resultados")
             except Exception as exc:
                 last_err = exc
@@ -277,7 +292,7 @@ class FlightScraper:
             logger.debug(f"[{search.id}] {len(raw_cards)} cards extraídos")
             if raw_cards:
                 first = raw_cards[0]
-                logger.debug(f"[{search.id}] Primeiro card — preço={first.get('price')} airline='{first.get('airline')}' dep='{first.get('departure')}' arr='{first.get('arrival')}'")
+                logger.debug(f"[{search.id}] Primeiro card — preço={first.get('price')} airline='{first.get('airline')}' outbound={first.get('outbound_dep')}→{first.get('outbound_arr')} return={first.get('return_dep')}→{first.get('return_arr')}")
                 logger.debug(f"[{search.id}] Texto bruto (200 chars): {first.get('priceText','')[:200]}")
 
             results: list[FlightResult] = []
@@ -296,19 +311,21 @@ class FlightScraper:
                 airline = card.get("airline", "")
 
                 results.append(FlightResult(
-                    search_id      = search.id,
-                    origin         = search.origin,
-                    destination    = search.destination,
-                    outbound_date  = search.outbound_date,
-                    return_date    = search.return_date,
-                    price          = price,
-                    currency       = self.currency,
-                    airline        = airline,
-                    departure_time = card.get("departure", ""),
-                    arrival_time   = card.get("arrival", ""),
-                    duration       = duration,
-                    stops          = _parse_stops(text),
-                    scraped_at     = scraped_at,
+                    search_id             = search.id,
+                    origin                = search.origin,
+                    destination           = search.destination,
+                    outbound_date         = search.outbound_date,
+                    return_date           = search.return_date,
+                    price                 = price,
+                    currency              = self.currency,
+                    airline               = airline,
+                    departure_time        = card.get("outbound_dep", ""),
+                    arrival_time          = card.get("outbound_arr", ""),
+                    duration              = duration,
+                    stops                 = _parse_stops(text),
+                    scraped_at            = scraped_at,
+                    return_departure_time = card.get("return_dep", ""),
+                    return_arrival_time   = card.get("return_arr", ""),
                 ))
             return results
 
@@ -621,3 +638,67 @@ def day_str_log(date_str: str) -> str:
         return f"{d}/{m}/{y}"
     except Exception:
         return date_str
+
+
+def _time_penalty(actual: str, preferred: str) -> float:
+    """
+    Calcula penalidade baseada na diferença entre horário real e preferido.
+    Retorna: 0.0 (perfeito) até 1.0 (12h de diferença).
+    """
+    if not actual or not preferred:
+        return 0.5  # Penalidade neutra se horário não disponível
+
+    try:
+        # Converte HH:MM para minutos desde meia-noite
+        h_act, m_act = map(int, actual.split(":"))
+        h_pref, m_pref = map(int, preferred.split(":"))
+
+        minutes_actual = h_act * 60 + m_act
+        minutes_pref = h_pref * 60 + m_pref
+
+        # Diferença em minutos (absoluta)
+        diff = abs(minutes_actual - minutes_pref)
+
+        # Normaliza para 0-1 (12h = 720min como máximo)
+        penalty = min(diff / 720.0, 1.0)
+        return penalty
+    except Exception:
+        return 0.5
+
+
+def _flight_score(flight: FlightResult, search: SearchConfig) -> float:
+    """
+    Calcula score de ordenação combinando preço e preferências de horário.
+    Score menor = melhor opção.
+
+    Componentes:
+    - Horário de ida diferente do preferido (peso 40%)
+    - Horário de volta diferente do preferido (peso 40%)
+    - Preço normalizado (peso 20%)
+    """
+    # Peso de cada componente (HORÁRIO É PRIORITÁRIO)
+    OUTBOUND_TIME_WEIGHT = 0.40
+    RETURN_TIME_WEIGHT = 0.40
+    PRICE_WEIGHT = 0.20
+
+    # Componente 1: Horário de ida (PRIORITÁRIO)
+    outbound_penalty = _time_penalty(flight.departure_time, search.preferred_outbound_time)
+
+    # Componente 2: Horário de volta (PRIORITÁRIO, apenas para round-trip)
+    return_penalty = 0.0
+    if search.is_round_trip and flight.return_departure_time:
+        return_penalty = _time_penalty(flight.return_departure_time, search.preferred_return_time)
+
+    # Componente 3: Preço (secundário)
+    # Normaliza assumindo que R$ 3000 seria um preço muito alto
+    price_score = min(flight.price / 3000.0, 1.0)
+
+    # Score final (0.0 = perfeito, 1.0 = péssimo)
+    # Horários têm peso 80% combinado, preço apenas 20%
+    total_score = (
+        outbound_penalty * OUTBOUND_TIME_WEIGHT +
+        return_penalty * RETURN_TIME_WEIGHT +
+        price_score * PRICE_WEIGHT
+    )
+
+    return total_score

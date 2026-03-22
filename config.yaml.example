@@ -23,6 +23,8 @@ searches:
     return_date: "2026-05-30"
     adults: 1
     cabin: "economy"
+    preferred_outbound_time: "08:00"  # Voo de ida: manhã cedo (PRIORITÁRIO)
+    preferred_return_time: "20:00"    # Voo de volta: noite/8pm (PRIORITÁRIO)
 
 # ── Notificações ────────────────────────────────
 notifications:

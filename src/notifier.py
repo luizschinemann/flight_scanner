@@ -79,6 +79,9 @@ def print_results_table(
 
     cheapest = results[0]
 
+    # Verifica se há voos com horário de volta para ajustar colunas
+    has_return = any(r.return_departure_time for r in results[:10])
+
     table = Table(
         title=f"[bold]{search.label}[/bold]",
         box=box.ROUNDED,
@@ -91,8 +94,11 @@ def print_results_table(
     table.add_column("Preço",      style="bold", justify="right", min_width=14)
     table.add_column("Variação",   justify="center", min_width=10)
     table.add_column("Companhia",  min_width=20)
-    table.add_column("Saída",      justify="center", min_width=7)
-    table.add_column("Chegada",    justify="center", min_width=7)
+    table.add_column("Ida (Saída)",      justify="center", min_width=7)
+    table.add_column("Ida (Chegada)",    justify="center", min_width=7)
+    if has_return:
+        table.add_column("Volta (Saída)",  justify="center", min_width=7)
+        table.add_column("Volta (Chegada)", justify="center", min_width=7)
     table.add_column("Duração",    justify="center", min_width=7)
     table.add_column("Escalas",    justify="center", min_width=10)
 
@@ -100,16 +106,28 @@ def print_results_table(
         # Variação em relação ao mínimo anterior
         trend = _price_trend(r.price, prev_min_price) if i == 1 else ""
         price_style = "bold green" if i == 1 else ""
-        table.add_row(
+
+        row_data = [
             str(i),
             Text(_fmt_price(r.price, r.currency), style=price_style),
             Text.from_markup(trend),
             r.airline or "–",
             r.departure_time or "–",
             r.arrival_time or "–",
+        ]
+
+        if has_return:
+            row_data.extend([
+                r.return_departure_time or "–",
+                r.return_arrival_time or "–",
+            ])
+
+        row_data.extend([
             r.duration or "–",
             Text.from_markup(_fmt_stops(r.stops)),
-        )
+        ])
+
+        table.add_row(*row_data)
 
     console.print(table)
 
@@ -187,13 +205,18 @@ class Notifier:
     ):
         if not self.config.webhook_url:
             return
+        # Monta mensagem com horários de ida e volta
+        horarios = f"Ida: {result.departure_time or '–'} → {result.arrival_time or '–'}"
+        if result.return_departure_time and result.return_arrival_time:
+            horarios += f"\nVolta: {result.return_departure_time} → {result.return_arrival_time}"
+
         message = (
             f"🔔 **QUEDA DE PREÇO ▼{drop_pct:.1f}%**\n"
             f"**{search.label}**\n"
             f"Antes: {_fmt_price(prev_price, result.currency)}  →  "
             f"Agora: **{_fmt_price(result.price, result.currency)}**\n"
-            f"Companhia: {result.airline or '–'}  |  "
-            f"Saída: {result.departure_time or '–'}  Chegada: {result.arrival_time or '–'}\n"
+            f"Companhia: {result.airline or '–'}\n"
+            f"{horarios}\n"
             f"Escalas: {result.stops if result.stops >= 0 else '–'}"
         )
 
@@ -293,29 +316,47 @@ class Notifier:
                 return f"{stops} escalas"
             return ""
 
-        # ── Linha do melhor voo (2 linhas) ───────────────────────────────
+        # ── Linha do melhor voo (3-4 linhas) ─────────────────────────────
         def _best_row(r: FlightResult) -> str:
             line1 = _fmt_price(r.price, r.currency)
             if r.airline:
                 line1 += f"  ·  {r.airline}"
-            time_parts = []
+
+            # Linha 2: Ida
+            time_parts_out = []
             if r.departure_time and r.arrival_time:
-                time_parts.append(f"{r.departure_time} → {r.arrival_time}")
+                time_parts_out.append(f"Ida: {r.departure_time} → {r.arrival_time}")
             if r.duration:
-                time_parts.append(_fmt_dur(r.duration))
+                time_parts_out.append(_fmt_dur(r.duration))
             s = _fmt_stops_plain(r.stops)
             if s:
-                time_parts.append(s)
-            line2 = "  ·  ".join(time_parts)
-            return f"{line1}\n{line2}" if line2 else line1
+                time_parts_out.append(s)
+            line2 = "  ·  ".join(time_parts_out)
+
+            # Linha 3: Volta (se houver)
+            line3 = ""
+            if r.return_departure_time and r.return_arrival_time:
+                line3 = f"Volta: {r.return_departure_time} → {r.return_arrival_time}"
+
+            result = [line1]
+            if line2:
+                result.append(line2)
+            if line3:
+                result.append(line3)
+            return "\n".join(result)
 
         # ── Linha compacta (outras opções) ────────────────────────────────
         def _compact_row(r: FlightResult) -> str:
             parts = [_fmt_price(r.price, r.currency)]
             if r.airline:
                 parts.append(r.airline)
+            # Ida
             if r.departure_time and r.arrival_time:
-                parts.append(f"{r.departure_time} → {r.arrival_time}")
+                parts.append(f"Ida: {r.departure_time} → {r.arrival_time}")
+            # Volta (se houver)
+            if r.return_departure_time and r.return_arrival_time:
+                parts.append(f"Volta: {r.return_departure_time} → {r.return_arrival_time}")
+            # Escalas
             s = _fmt_stops_plain(r.stops)
             if s:
                 parts.append(s)

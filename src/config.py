@@ -21,6 +21,8 @@ class SearchConfig:
     return_date: Optional[str] = None
     adults: int = 1
     cabin: str = "economy"
+    preferred_outbound_time: str = "08:00"  # Horário preferido para voo de ida
+    preferred_return_time: str = "20:00"    # Horário preferido para voo de volta
 
     @property
     def is_round_trip(self) -> bool:
@@ -114,6 +116,8 @@ def load_config(path: str | Path = "config.yaml") -> AppConfig:
                 return_date=s.get("return_date"),
                 adults=int(s.get("adults", 1)),
                 cabin=s.get("cabin", "economy"),
+                preferred_outbound_time=s.get("preferred_outbound_time", "08:00"),
+                preferred_return_time=s.get("preferred_return_time", "20:00"),
             )
         )
 
